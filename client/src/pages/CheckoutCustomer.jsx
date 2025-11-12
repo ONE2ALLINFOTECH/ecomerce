@@ -28,7 +28,6 @@ const CheckoutCustomer = () => {
   const shippingCharge = 29;
   const finalAmount = totalAmount - discount + shippingCharge;
 
-  // NEW: Calculate available payment methods based on product settings
   const getAvailablePaymentMethods = () => {
     if (!items || items.length === 0) {
       return { online: false, cod: false };
@@ -50,7 +49,6 @@ const CheckoutCustomer = () => {
 
   const availablePaymentMethods = getAvailablePaymentMethods();
 
-  // Auto-select first available payment method
   React.useEffect(() => {
     if (!paymentMethod) {
       if (availablePaymentMethods.online) {
@@ -70,8 +68,9 @@ const CheckoutCustomer = () => {
   };
 
   const handlePlaceOrder = async () => {
-    if (!address.name || !address.mobile || !address.pincode || !address.address || !address.city || !address.state) {
-      alert('Please fill all required address fields');
+    // Validation
+    if (!address.name || !address.mobile || !address.pincode || !address.locality || !address.address || !address.city || !address.state) {
+      alert('Please fill all required address fields including locality');
       return;
     }
 
@@ -93,13 +92,40 @@ const CheckoutCustomer = () => {
         paymentMethod
       };
 
+      console.log('📦 Creating order with data:', orderData);
+
       const { data } = await API.post('/orders/create', orderData);
 
+      console.log('✅ Order response:', data);
+
       if (paymentMethod === 'online') {
+        // Online payment - load Cashfree SDK
         await loadCashfreeSDK();
-        initializeCashfreePayment(data.paymentSessionId, data.orderId);
+        
+        if (!data.paymentSessionId) {
+          throw new Error('Payment session ID not received');
+        }
+
+        console.log('🔄 Initializing payment with session:', data.paymentSessionId);
+        
+        const cashfree = new window.Cashfree(data.paymentSessionId);
+        
+        cashfree.checkout({
+          paymentSessionId: data.paymentSessionId,
+          redirectTarget: "_self"
+        }).then(() => {
+          console.log('Payment redirect initiated');
+        }).catch((error) => {
+          console.error('Cashfree checkout error:', error);
+          alert('Payment initialization failed. Please try again.');
+          setLoading(false);
+        });
       } else {
+        // COD payment - clear cart and redirect
+        console.log('✅ COD order placed, redirecting to success page');
+        
         dispatch(clearCart());
+        
         navigate('/order-success', { 
           state: { 
             orderId: data.orderId,
@@ -109,8 +135,13 @@ const CheckoutCustomer = () => {
         });
       }
     } catch (error) {
-      console.error('Order creation failed:', error);
-      alert(error.response?.data?.message || 'Failed to create order');
+      console.error('❌ Order creation failed:', error);
+      
+      const errorMessage = error.response?.data?.message 
+        || error.message 
+        || 'Failed to create order. Please try again.';
+      
+      alert(errorMessage);
       setLoading(false);
     }
   };
@@ -118,24 +149,23 @@ const CheckoutCustomer = () => {
   const loadCashfreeSDK = () => {
     return new Promise((resolve, reject) => {
       if (window.Cashfree) {
+        console.log('✅ Cashfree SDK already loaded');
         resolve();
         return;
       }
 
+      console.log('📥 Loading Cashfree SDK...');
       const script = document.createElement('script');
       script.src = "https://sdk.cashfree.com/js/v3/cashfree.js";
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error('Failed to load Cashfree SDK'));
+      script.onload = () => {
+        console.log('✅ Cashfree SDK loaded successfully');
+        resolve();
+      };
+      script.onerror = () => {
+        console.error('❌ Failed to load Cashfree SDK');
+        reject(new Error('Failed to load Cashfree SDK'));
+      };
       document.head.appendChild(script);
-    });
-  };
-
-  const initializeCashfreePayment = (paymentSessionId, orderId) => {
-    const cashfree = new Cashfree();
-    
-    cashfree.checkout({
-      paymentSessionId,
-      redirectTarget: "_self"
     });
   };
 
@@ -216,7 +246,8 @@ const CheckoutCustomer = () => {
                       name="name"
                       value={address.name}
                       onChange={handleInputChange}
-                      placeholder="Name"
+                      placeholder="Name *"
+                      required
                       className="w-full px-4 py-3 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -226,7 +257,8 @@ const CheckoutCustomer = () => {
                       name="mobile"
                       value={address.mobile}
                       onChange={handleInputChange}
-                      placeholder="10-digit mobile number"
+                      placeholder="10-digit mobile number *"
+                      required
                       className="w-full px-4 py-3 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -236,7 +268,8 @@ const CheckoutCustomer = () => {
                       name="pincode"
                       value={address.pincode}
                       onChange={handleInputChange}
-                      placeholder="Pincode"
+                      placeholder="Pincode *"
+                      required
                       className="w-full px-4 py-3 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -246,7 +279,8 @@ const CheckoutCustomer = () => {
                       name="locality"
                       value={address.locality}
                       onChange={handleInputChange}
-                      placeholder="Locality"
+                      placeholder="Locality *"
+                      required
                       className="w-full px-4 py-3 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -255,8 +289,9 @@ const CheckoutCustomer = () => {
                       name="address"
                       value={address.address}
                       onChange={handleInputChange}
-                      placeholder="Address (Area and Street)"
+                      placeholder="Address (Area and Street) *"
                       rows="2"
+                      required
                       className="w-full px-4 py-3 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -266,7 +301,8 @@ const CheckoutCustomer = () => {
                       name="city"
                       value={address.city}
                       onChange={handleInputChange}
-                      placeholder="City/District/Town"
+                      placeholder="City/District/Town *"
+                      required
                       className="w-full px-4 py-3 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -276,7 +312,8 @@ const CheckoutCustomer = () => {
                       name="state"
                       value={address.state}
                       onChange={handleInputChange}
-                      placeholder="State"
+                      placeholder="State *"
+                      required
                       className="w-full px-4 py-3 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -304,7 +341,7 @@ const CheckoutCustomer = () => {
               </div>
             </div>
 
-            {/* Payment Options - UPDATED */}
+            {/* Payment Options */}
             <div className="bg-white shadow-sm">
               <div className="flex items-center space-x-3 px-6 py-4 border-b">
                 <span className="text-gray-500">3</span>
