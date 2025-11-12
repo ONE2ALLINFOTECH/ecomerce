@@ -5,6 +5,19 @@ const Order = require('../models/Order');
 const Cart = require('../models/Cart');
 const cashfree = require('../config/cashfree');
 
+// Test Cashfree Connection
+router.get('/test-cashfree', async (req, res) => {
+  try {
+    const testResult = await cashfree.testConnection();
+    res.json(testResult);
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
 // Create Order and Payment Session
 router.post('/create', protectCustomer, async (req, res) => {
   try {
@@ -159,12 +172,16 @@ router.post('/create', protectCustomer, async (req, res) => {
           order_id: cashfreeOrderData.order_id,
           order_amount: cashfreeOrderData.order_amount,
           return_url: cashfreeOrderData.order_meta.return_url,
-          notify_url: cashfreeOrderData.order_meta.notify_url
+          notify_url: cashfreeOrderData.order_meta.notify_url,
+          environment: cashfree.environment
         });
 
         const cashfreeResponse = await cashfree.createOrder(cashfreeOrderData);
         
-        console.log('✅ Cashfree order created successfully');
+        console.log('✅ Cashfree order created successfully:', {
+          cf_order_id: cashfreeResponse.cf_order_id,
+          payment_session_id: cashfreeResponse.payment_session_id ? '✓ Present' : '✗ Missing'
+        });
 
         // Update order with Cashfree details
         order.cashfreeOrderId = cashfreeResponse.cf_order_id;
@@ -174,7 +191,8 @@ router.post('/create', protectCustomer, async (req, res) => {
           orderId: order.orderId,
           paymentSessionId: cashfreeResponse.payment_session_id,
           orderAmount: finalAmount,
-          paymentLink: cashfreeResponse.payment_link
+          paymentLink: cashfreeResponse.payment_link,
+          cashfreeOrderId: cashfreeResponse.cf_order_id
         });
 
       } catch (cashfreeError) {
@@ -186,7 +204,8 @@ router.post('/create', protectCustomer, async (req, res) => {
         console.error('❌ Cashfree error:', cashfreeError);
         return res.status(500).json({ 
           message: 'Payment gateway error. Please try again or use Cash on Delivery.', 
-          error: cashfreeError.message 
+          error: cashfreeError.message,
+          orderId: order.orderId // Return order ID even if payment fails
         });
       }
     } else {
@@ -404,38 +423,6 @@ router.put('/cancel/:orderId', protectCustomer, async (req, res) => {
   } catch (error) {
     console.error('❌ Cancel order error:', error);
     res.status(500).json({ message: 'Failed to cancel order', error: error.message });
-  }
-});
-
-// Admin: Get All Orders (add this if you have admin routes)
-router.get('/admin/all-orders', async (req, res) => {
-  try {
-    // Add your admin authentication middleware here
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const skip = (page - 1) * limit;
-
-    const orders = await Order.find()
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate('user', 'username email')
-      .populate('items.productId', 'name');
-
-    const totalOrders = await Order.countDocuments();
-
-    res.json({
-      orders,
-      pagination: {
-        currentPage: page,
-        totalPages: Math.ceil(totalOrders / limit),
-        totalOrders,
-        ordersPerPage: limit
-      }
-    });
-  } catch (error) {
-    console.error('❌ Get all orders error:', error);
-    res.status(500).json({ message: 'Failed to fetch orders', error: error.message });
   }
 });
 

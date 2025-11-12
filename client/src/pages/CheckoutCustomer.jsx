@@ -13,8 +13,8 @@ const CheckoutCustomer = () => {
   const [loading, setLoading] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('');
   const [address, setAddress] = useState({
-    name: userInfo?.username || '',
-    mobile: '',
+    name: userInfo?.name || '',
+    mobile: userInfo?.phone || '',
     pincode: '',
     locality: '',
     address: '',
@@ -156,7 +156,13 @@ const CheckoutCustomer = () => {
 
       console.log('📥 Loading Cashfree SDK...');
       const script = document.createElement('script');
-      script.src = "https://sdk.cashfree.com/js/v3/cashfree.js";
+      
+      // Use correct SDK URL based on environment
+      const isProduction = process.env.NODE_ENV === 'production';
+      script.src = isProduction 
+        ? "https://sdk.cashfree.com/js/v3/cashfree.js" 
+        : "https://sdk.cashfree.com/js/v3/cashfree.sandbox.js";
+        
       script.onload = () => {
         console.log('✅ Cashfree SDK loaded successfully');
         resolve();
@@ -225,7 +231,7 @@ const CheckoutCustomer = () => {
               </div>
               <div className="px-6 py-4">
                 <div className="flex items-center space-x-2">
-                  <span className="font-medium text-gray-900">{userInfo?.username}</span>
+                  <span className="font-medium text-gray-900">{userInfo?.name}</span>
                   <span className="text-gray-500">•</span>
                   <span className="text-gray-600">{userInfo?.email}</span>
                 </div>
