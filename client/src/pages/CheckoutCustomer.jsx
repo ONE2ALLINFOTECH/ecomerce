@@ -39,7 +39,7 @@ const StripeCheckoutForm = ({
         payment_method: {
           card: cardElement,
           billing_details: {
-            name: 'Customer Name', // You can pass customer name here
+            name: 'Customer Name',
           },
         }
       });
@@ -75,33 +75,36 @@ const StripeCheckoutForm = ({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="border border-gray-300 rounded-lg p-3 bg-white">
-        <CardElement options={cardElementOptions} />
-      </div>
-      
-      {error && (
-        <div className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg p-3">
-          {error}
+    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 mt-4">
+      <h4 className="font-medium text-gray-900 mb-3">Card Payment</h4>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="border border-gray-300 rounded-lg p-3 bg-white">
+          <CardElement options={cardElementOptions} />
         </div>
-      )}
-      
-      <button
-        type="submit"
-        disabled={!stripe || processing}
-        className={`w-full py-3 rounded font-semibold text-sm transition-colors shadow-md ${
-          !stripe || processing
-            ? 'bg-gray-400 text-gray-200 cursor-not-allowed'
-            : 'bg-blue-600 text-white hover:bg-blue-700'
-        }`}
-      >
-        {processing ? 'PROCESSING PAYMENT...' : `PAY ₹${orderAmount}`}
-      </button>
-      
-      <div className="text-xs text-gray-500 text-center">
-        Your payment is secure and encrypted
-      </div>
-    </form>
+        
+        {error && (
+          <div className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg p-3">
+            {error}
+          </div>
+        )}
+        
+        <button
+          type="submit"
+          disabled={!stripe || processing}
+          className={`w-full py-3 rounded font-semibold text-sm transition-colors shadow-md ${
+            !stripe || processing
+              ? 'bg-gray-400 text-gray-200 cursor-not-allowed'
+              : 'bg-blue-600 text-white hover:bg-blue-700'
+          }`}
+        >
+          {processing ? 'PROCESSING PAYMENT...' : `PAY ₹${orderAmount}`}
+        </button>
+        
+        <div className="text-xs text-gray-500 text-center">
+          Your payment is secure and encrypted
+        </div>
+      </form>
+    </div>
   );
 };
 
@@ -115,6 +118,7 @@ const CheckoutCustomer = () => {
   const [loading, setLoading] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('');
   const [paymentData, setPaymentData] = useState(null);
+  const [showStripeForm, setShowStripeForm] = useState(false);
   const [address, setAddress] = useState({
     name: userInfo?.username || '',
     mobile: '',
@@ -201,14 +205,15 @@ const CheckoutCustomer = () => {
 
       console.log('✅ Order response:', data);
 
-      if (paymentMethod === 'online') {
-        // Set payment data for Stripe
+      if (paymentMethod === 'online' && data.clientSecret) {
+        // Set payment data for Stripe and show the form
         setPaymentData({
           clientSecret: data.clientSecret,
           orderId: data.orderId,
           orderAmount: data.orderAmount
         });
-      } else {
+        setShowStripeForm(true);
+      } else if (paymentMethod === 'cod') {
         // COD payment - clear cart and redirect
         console.log('✅ COD order placed, redirecting to success page');
         
@@ -221,6 +226,8 @@ const CheckoutCustomer = () => {
             paymentMethod: 'cod'
           }
         });
+      } else {
+        alert('Failed to process order. Please try again.');
       }
     } catch (error) {
       console.error('❌ Order creation failed:', error);
@@ -443,7 +450,11 @@ const CheckoutCustomer = () => {
                     name="paymentMethod"
                     value="online"
                     checked={paymentMethod === 'online'}
-                    onChange={(e) => setPaymentMethod(e.target.value)}
+                    onChange={(e) => {
+                      setPaymentMethod(e.target.value);
+                      setShowStripeForm(false);
+                      setPaymentData(null);
+                    }}
                     disabled={!availablePaymentMethods.online}
                     className="w-4 h-4 mt-1 text-blue-600 focus:ring-0 disabled:cursor-not-allowed"
                   />
@@ -474,7 +485,11 @@ const CheckoutCustomer = () => {
                     name="paymentMethod"
                     value="cod"
                     checked={paymentMethod === 'cod'}
-                    onChange={(e) => setPaymentMethod(e.target.value)}
+                    onChange={(e) => {
+                      setPaymentMethod(e.target.value);
+                      setShowStripeForm(false);
+                      setPaymentData(null);
+                    }}
                     disabled={!availablePaymentMethods.cod}
                     className="w-4 h-4 mt-1 text-blue-600 focus:ring-0 disabled:cursor-not-allowed"
                   />
@@ -496,20 +511,17 @@ const CheckoutCustomer = () => {
                   </div>
                 </label>
 
-                {/* Stripe Payment Form */}
-                {paymentData && paymentMethod === 'online' && (
-                  <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                    <h4 className="font-medium text-gray-900 mb-3">Card Payment</h4>
-                    <Elements stripe={stripePromise}>
-                      <StripeCheckoutForm
-                        clientSecret={paymentData.clientSecret}
-                        orderId={paymentData.orderId}
-                        orderAmount={paymentData.orderAmount}
-                        onSuccess={handlePaymentSuccess}
-                        onError={handlePaymentError}
-                      />
-                    </Elements>
-                  </div>
+                {/* Stripe Payment Form - Only show after CONTINUE button is clicked for online payment */}
+                {showStripeForm && paymentData && paymentMethod === 'online' && (
+                  <Elements stripe={stripePromise} options={{ clientSecret: paymentData.clientSecret }}>
+                    <StripeCheckoutForm
+                      clientSecret={paymentData.clientSecret}
+                      orderId={paymentData.orderId}
+                      orderAmount={paymentData.orderAmount}
+                      onSuccess={handlePaymentSuccess}
+                      onError={handlePaymentError}
+                    />
+                  </Elements>
                 )}
 
                 {/* Warning if no payment methods available */}
@@ -559,7 +571,7 @@ const CheckoutCustomer = () => {
                 </div>
               </div>
               <div className="px-6 pb-6">
-                {!paymentData && (
+                {!showStripeForm && (
                   <button
                     onClick={handlePlaceOrder}
                     disabled={loading || (!availablePaymentMethods.online && !availablePaymentMethods.cod)}
@@ -569,7 +581,7 @@ const CheckoutCustomer = () => {
                         : 'bg-orange-500 text-white hover:bg-orange-600'
                     }`}
                   >
-                    {loading ? 'PROCESSING...' : 'CONTINUE'}
+                    {loading ? 'PROCESSING...' : `PAY ₹${finalAmount.toFixed(0)}`}
                   </button>
                 )}
                 
