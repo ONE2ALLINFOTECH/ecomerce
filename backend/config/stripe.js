@@ -2,25 +2,14 @@ const Stripe = require('stripe');
 
 class StripePayment {
   constructor() {
-    // Validate Stripe secret key
-    if (!process.env.STRIPE_SECRET_KEY) {
-      console.error('❌ STRIPE_SECRET_KEY is missing');
-      throw new Error('Stripe secret key is required');
-    }
-
-    try {
-      this.stripe = Stripe(process.env.STRIPE_SECRET_KEY);
-      this.currency = 'inr';
-      
-      console.log('💳 Stripe Configuration:', {
-        environment: process.env.NODE_ENV,
-        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ? '✓ Present' : '✗ Missing',
-        secretKey: process.env.STRIPE_SECRET_KEY ? '✓ Present' : '✗ Missing'
-      });
-    } catch (error) {
-      console.error('❌ Stripe initialization failed:', error);
-      throw new Error('Failed to initialize Stripe');
-    }
+    this.stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+    this.currency = 'inr';
+    
+    console.log('💳 Stripe Configuration:', {
+      environment: process.env.NODE_ENV,
+      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ? '✓ Present' : '✗ Missing',
+      secretKey: process.env.STRIPE_SECRET_KEY ? '✓ Present' : '✗ Missing'
+    });
   }
 
   async createPaymentIntent(orderData) {
@@ -32,14 +21,9 @@ class StripePayment {
         customer: orderData.customer_name
       });
 
-      // Validate amount
-      if (!orderData.amount || orderData.amount < 1) {
-        throw new Error('Invalid amount for payment');
-      }
-
       const paymentIntent = await this.stripe.paymentIntents.create({
         amount: Math.round(orderData.amount * 100), // Convert to paise
-        currency: orderData.currency || 'inr',
+        currency: orderData.currency,
         metadata: {
           order_id: orderData.order_id,
           customer_id: orderData.customer_id,
@@ -58,6 +42,10 @@ class StripePayment {
             country: 'IN',
           },
         } : undefined,
+        // Add automatic payment methods
+        automatic_payment_methods: {
+          enabled: true,
+        },
       });
 
       console.log('✅ Stripe Payment Intent Created Successfully');
@@ -109,6 +97,62 @@ class StripePayment {
     } catch (error) {
       console.error('❌ Stripe Webhook Error:', error);
       throw new Error(`Webhook signature verification failed: ${error.message}`);
+    }
+  }
+
+  // Create Stripe Checkout Session for hosted payment page
+  async createCheckoutSession(orderData, successUrl, cancelUrl) {
+    try {
+      console.log('🔄 Creating Stripe Checkout Session:', {
+        order_id: orderData.order_id,
+        amount: orderData.amount,
+        customer: orderData.customer_name
+      });
+
+      const session = await this.stripe.checkout.sessions.create({
+        payment_method_types: ['card', 'upi', 'netbanking'],
+        line_items: [
+          {
+            price_data: {
+              currency: orderData.currency,
+              product_data: {
+                name: `Order ${orderData.order_id}`,
+                description: `Payment for order ${orderData.order_id}`,
+              },
+              unit_amount: Math.round(orderData.amount * 100), // Convert to paise
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment',
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        customer_email: orderData.customer_email,
+        client_reference_id: orderData.order_id,
+        metadata: {
+          order_id: orderData.order_id,
+          customer_id: orderData.customer_id,
+          customer_name: orderData.customer_name
+        },
+        shipping_address_collection: {
+          allowed_countries: ['IN'],
+        },
+        custom_text: {
+          submit: {
+            message: 'Thank you for your order!',
+          },
+        },
+      });
+
+      console.log('✅ Stripe Checkout Session Created Successfully');
+      return {
+        session_id: session.id,
+        url: session.url,
+        payment_intent_id: session.payment_intent
+      };
+    } catch (error) {
+      console.error('❌ Stripe Checkout Session Error:', error);
+      throw new Error(error.message || 'Failed to create payment session');
     }
   }
 
