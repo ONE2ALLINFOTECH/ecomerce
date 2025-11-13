@@ -133,7 +133,7 @@ router.post('/create', protectCustomer, async (req, res) => {
 
     console.log('✅ Order created in database:', order.orderId);
 
-    // If payment is online, create Stripe Checkout Session
+    // If payment is online, create Stripe Payment Intent
     if (paymentMethod === 'online') {
       try {
         const stripeOrderData = {
@@ -153,16 +153,11 @@ router.post('/create', protectCustomer, async (req, res) => {
           }
         };
 
-        console.log('🔄 Creating Stripe checkout session for order:', order.orderId);
+        console.log('🔄 Creating Stripe payment intent for order:', order.orderId);
 
-        // Create success and cancel URLs
-        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-        const successUrl = `${baseUrl}/order-success?order_id=${order.orderId}&session_id={CHECKOUT_SESSION_ID}`;
-        const cancelUrl = `${baseUrl}/checkout?order_id=${order.orderId}&canceled=true`;
-
-        const stripeResponse = await stripe.createCheckoutSession(stripeOrderData, successUrl, cancelUrl);
+        const stripeResponse = await stripe.createPaymentIntent(stripeOrderData);
         
-        console.log('✅ Stripe checkout session created successfully');
+        console.log('✅ Stripe payment intent created successfully');
 
         // Update order with Stripe details
         order.stripePaymentIntentId = stripeResponse.payment_intent_id;
@@ -171,11 +166,11 @@ router.post('/create', protectCustomer, async (req, res) => {
 
         res.json({
           orderId: order.orderId,
-          checkoutUrl: stripeResponse.url,
-          sessionId: stripeResponse.session_id,
+          clientSecret: stripeResponse.client_secret,
           paymentIntentId: stripeResponse.payment_intent_id,
+          publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
           orderAmount: finalAmount,
-          currency: 'inr'
+          currency: stripeResponse.currency
         });
 
       } catch (stripeError) {
@@ -230,59 +225,6 @@ router.post('/create', protectCustomer, async (req, res) => {
   }
 });
 
-// Verify Payment Status after Stripe Redirect
-router.get('/verify-payment/:orderId', protectCustomer, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const userId = req.user._id;
-
-    console.log('🔍 Verifying payment for order:', orderId);
-
-    const order = await Order.findOne({ orderId, user: userId });
-
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    // If it's a Stripe payment, get latest status from Stripe
-    if (order.stripePaymentIntentId) {
-      try {
-        const paymentIntent = await stripe.retrievePaymentIntent(order.stripePaymentIntentId);
-        order.stripePaymentStatus = paymentIntent.status;
-        
-        // Sync with our database
-        if (paymentIntent.status === 'succeeded' && order.paymentStatus !== 'success') {
-          order.paymentStatus = 'success';
-          order.orderStatus = 'confirmed';
-          
-          // Clear user's cart
-          await Cart.findOneAndUpdate(
-            { user: order.user },
-            { items: [], totalQuantity: 0, totalAmount: 0 }
-          );
-          
-          await order.save();
-          
-          console.log('✅ Payment verified and order updated:', orderId);
-        }
-      } catch (stripeError) {
-        console.error('Error fetching Stripe status:', stripeError);
-      }
-    }
-
-    res.json({
-      orderId: order.orderId,
-      paymentStatus: order.paymentStatus,
-      orderStatus: order.orderStatus,
-      stripePaymentStatus: order.stripePaymentStatus,
-      finalAmount: order.finalAmount
-    });
-  } catch (error) {
-    console.error('❌ Verify payment error:', error);
-    res.status(500).json({ message: 'Failed to verify payment', error: error.message });
-  }
-});
-
 // Stripe Webhook Handler
 router.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
   let event;
@@ -309,10 +251,6 @@ router.post('/webhook', express.raw({type: 'application/json'}), async (req, res
       
       case 'payment_intent.canceled':
         await handlePaymentCanceled(event.data.object);
-        break;
-      
-      case 'checkout.session.completed':
-        await handleCheckoutSessionCompleted(event.data.object);
         break;
       
       default:
@@ -393,31 +331,53 @@ async function handlePaymentCanceled(paymentIntent) {
   console.log('✅ Order updated for canceled payment:', order_id);
 }
 
-async function handleCheckoutSessionCompleted(session) {
-  const { order_id } = session.metadata;
-  
-  console.log('✅ Checkout session completed for order:', order_id);
+// Check Payment Status
+router.get('/payment-status/:orderId', protectCustomer, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const userId = req.user._id;
 
-  const order = await Order.findOne({ orderId: order_id });
-  if (!order) {
-    console.error('❌ Order not found for completed checkout session:', order_id);
-    return;
+    console.log('🔍 Checking payment status for order:', orderId);
+
+    const order = await Order.findOne({ orderId, user: userId });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // If it's a Stripe payment, get latest status from Stripe
+    if (order.stripePaymentIntentId) {
+      try {
+        const paymentIntent = await stripe.retrievePaymentIntent(order.stripePaymentIntentId);
+        order.stripePaymentStatus = paymentIntent.status;
+        
+        // Sync with our database
+        if (paymentIntent.status === 'succeeded' && order.paymentStatus !== 'success') {
+          order.paymentStatus = 'success';
+          order.orderStatus = 'confirmed';
+          await order.save();
+        } else if (paymentIntent.status === 'canceled' && order.paymentStatus !== 'cancelled') {
+          order.paymentStatus = 'cancelled';
+          order.orderStatus = 'cancelled';
+          await order.save();
+        }
+      } catch (stripeError) {
+        console.error('Error fetching Stripe status:', stripeError);
+      }
+    }
+
+    res.json({
+      orderId: order.orderId,
+      paymentStatus: order.paymentStatus,
+      orderStatus: order.orderStatus,
+      stripePaymentStatus: order.stripePaymentStatus,
+      finalAmount: order.finalAmount
+    });
+  } catch (error) {
+    console.error('❌ Get payment status error:', error);
+    res.status(500).json({ message: 'Failed to fetch payment status', error: error.message });
   }
-
-  order.paymentStatus = 'success';
-  order.orderStatus = 'confirmed';
-  order.stripePaymentStatus = 'succeeded';
-  order.stripePaymentIntentId = session.payment_intent;
-  
-  // Clear user's cart
-  await Cart.findOneAndUpdate(
-    { user: order.user },
-    { items: [], totalQuantity: 0, totalAmount: 0 }
-  );
-
-  await order.save();
-  console.log('✅ Order updated for completed checkout session:', order_id);
-}
+});
 
 // Get All User Orders
 router.get('/my-orders', protectCustomer, async (req, res) => {
