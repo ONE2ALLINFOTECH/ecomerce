@@ -5,10 +5,7 @@ import { loginUserCustomer, clearErrorCustomer } from '../../store/userCustomerS
 import { Eye, EyeOff } from 'lucide-react';
 
 const LoginCustomer = () => {
-  const [formData, setFormData] = useState({
-    email: '',
-    password: ''
-  });
+  const [formData, setFormData] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
 
   const dispatch = useDispatch();
@@ -19,12 +16,15 @@ const LoginCustomer = () => {
 
   const redirect = location.search ? location.search.split('=')[1] : '/home';
 
+  // ✔ CLEAR ERROR ONLY ONCE
   useEffect(() => {
-    if (userInfo) {
-      navigate(redirect);
-    }
     dispatch(clearErrorCustomer());
-  }, [userInfo, redirect, navigate, dispatch]);
+  }, []);
+
+  // ✔ Navigate only when login success
+  useEffect(() => {
+    if (userInfo) navigate(redirect);
+  }, [userInfo, navigate, redirect]);
 
   const handleChange = (e) => {
     setFormData(prev => ({
@@ -46,10 +46,7 @@ const LoginCustomer = () => {
         </h2>
         <p className="mt-2 text-center text-sm text-gray-600">
           Or{' '}
-          <Link
-            to="/register-customer"
-            className="font-medium text-blue-600 hover:text-blue-500"
-          >
+          <Link to="/register-customer" className="font-medium text-blue-600 hover:text-blue-500">
             create a new account
           </Link>
         </p>
@@ -57,6 +54,7 @@ const LoginCustomer = () => {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
+
           {error && (
             <div className="mb-4 bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded">
               {error}
@@ -65,37 +63,27 @@ const LoginCustomer = () => {
 
           <form className="space-y-6" onSubmit={handleSubmit}>
             <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700">
-                Email address
-              </label>
-              <div className="mt-1">
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  required
-                  value={formData.email}
-                  onChange={handleChange}
-                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
+              <label className="block text-sm font-medium text-gray-700">Email address</label>
+              <input
+                type="email"
+                name="email"
+                required
+                value={formData.email}
+                onChange={handleChange}
+                className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md"
+              />
             </div>
 
             <div>
-              <label htmlFor="password" className="block text-sm font-medium text-gray-700">
-                Password
-              </label>
+              <label className="block text-sm font-medium text-gray-700">Password</label>
               <div className="mt-1 relative">
                 <input
-                  id="password"
+                  type={showPassword ? "text" : "password"}
                   name="password"
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
                   required
                   value={formData.password}
                   onChange={handleChange}
-                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md"
                 />
                 <button
                   type="button"
@@ -107,38 +95,13 @@ const LoginCustomer = () => {
               </div>
             </div>
 
-            <div className="flex items-center justify-between">
-              <div className="flex items-center">
-                <input
-                  id="remember-me"
-                  name="remember-me"
-                  type="checkbox"
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                />
-                <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-900">
-                  Remember me
-                </label>
-              </div>
+            <button
+              type="submit"
+              className="w-full flex justify-center py-2 px-4 text-white bg-blue-600 hover:bg-blue-700 rounded-md"
+            >
+              {loading ? "Signing in..." : "Sign in"}
+            </button>
 
-              <div className="text-sm">
-                <Link
-                  to="/forgot-password-customer"
-                  className="font-medium text-blue-600 hover:text-blue-500"
-                >
-                  Forgot your password?
-                </Link>
-              </div>
-            </div>
-
-            <div>
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
-              >
-                {loading ? 'Signing in...' : 'Sign in'}
-              </button>
-            </div>
           </form>
         </div>
       </div>
