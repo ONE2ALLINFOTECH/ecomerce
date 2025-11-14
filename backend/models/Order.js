@@ -107,6 +107,7 @@ const orderSchema = new mongoose.Schema({
     default: 'pending'
   },
   // Stripe Payment Fields
+  stripeSessionId: String,
   stripePaymentIntentId: String,
   stripePaymentStatus: String,
   stripeCustomerId: String,
@@ -134,5 +135,6 @@ orderSchema.pre('save', async function(next) {
 // Add index for better performance
 orderSchema.index({ orderId: 1 }, { unique: true });
 orderSchema.index({ stripePaymentIntentId: 1 });
+orderSchema.index({ stripeSessionId: 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

@@ -12,44 +12,52 @@ class StripePayment {
     });
   }
 
-  async createPaymentIntent(orderData) {
+  // Create Checkout Session (for hosted payment page)
+  async createCheckoutSession(orderData) {
     try {
-      console.log('🔄 Creating Stripe Payment Intent:', {
+      console.log('🔄 Creating Stripe Checkout Session:', {
         order_id: orderData.order_id,
         amount: orderData.amount,
         currency: orderData.currency,
         customer: orderData.customer_name
       });
 
-      const paymentIntent = await this.stripe.paymentIntents.create({
-        amount: Math.round(orderData.amount * 100), // Convert to paise
-        currency: orderData.currency,
+      const session = await this.stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            price_data: {
+              currency: orderData.currency,
+              product_data: {
+                name: `Order ${orderData.order_id}`,
+                description: `Payment for order ${orderData.order_id}`,
+              },
+              unit_amount: Math.round(orderData.amount * 100), // Convert to paise
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment',
+        success_url: `${process.env.FRONTEND_URL}/order-success?session_id={CHECKOUT_SESSION_ID}&order_id=${orderData.order_id}`,
+        cancel_url: `${process.env.FRONTEND_URL}/order-failed?order_id=${orderData.order_id}`,
+        customer_email: orderData.customer_email,
         metadata: {
           order_id: orderData.order_id,
           customer_id: orderData.customer_id,
           customer_email: orderData.customer_email,
           customer_name: orderData.customer_name
         },
-        description: `Payment for order ${orderData.order_id}`,
-        shipping: orderData.shipping_address ? {
-          name: orderData.customer_name,
-          phone: orderData.customer_phone,
-          address: {
-            line1: orderData.shipping_address.address,
-            city: orderData.shipping_address.city,
-            state: orderData.shipping_address.state,
-            postal_code: orderData.shipping_address.pincode,
-            country: 'IN',
-          },
-        } : undefined,
+        shipping_address_collection: {
+          allowed_countries: ['IN'],
+        },
       });
 
-      console.log('✅ Stripe Payment Intent Created Successfully');
+      console.log('✅ Stripe Checkout Session Created Successfully');
       return {
-        client_secret: paymentIntent.client_secret,
-        payment_intent_id: paymentIntent.id,
-        amount: paymentIntent.amount / 100, // Convert back to rupees
-        currency: paymentIntent.currency
+        session_id: session.id,
+        url: session.url,
+        amount: orderData.amount,
+        currency: session.currency
       };
     } catch (error) {
       console.error('❌ Stripe API Error:', {
@@ -69,12 +77,12 @@ class StripePayment {
     }
   }
 
-  async retrievePaymentIntent(paymentIntentId) {
+  async retrieveSession(sessionId) {
     try {
-      const paymentIntent = await this.stripe.paymentIntents.retrieve(paymentIntentId);
-      return paymentIntent;
+      const session = await this.stripe.checkout.sessions.retrieve(sessionId);
+      return session;
     } catch (error) {
-      console.error('Stripe retrieve payment intent error:', error);
+      console.error('Stripe retrieve session error:', error);
       throw new Error('Failed to fetch payment status');
     }
   }

@@ -5,7 +5,7 @@ const Order = require('../models/Order');
 const Cart = require('../models/Cart');
 const stripe = require('../config/stripe');
 
-// Create Order and Payment Intent
+// Create Order and Get Stripe Checkout URL
 router.post('/create', protectCustomer, async (req, res) => {
   try {
     // Validate environment variables
@@ -133,7 +133,7 @@ router.post('/create', protectCustomer, async (req, res) => {
 
     console.log('✅ Order created in database:', order.orderId);
 
-    // If payment is online, create Stripe Payment Intent
+    // If payment is online, create Stripe Checkout Session
     if (paymentMethod === 'online') {
       try {
         const stripeOrderData = {
@@ -143,32 +143,24 @@ router.post('/create', protectCustomer, async (req, res) => {
           customer_id: userId.toString(),
           customer_email: req.user.email,
           customer_phone: shippingAddress.mobile,
-          customer_name: shippingAddress.name,
-          shipping_address: {
-            address: shippingAddress.address,
-            city: shippingAddress.city,
-            state: shippingAddress.state,
-            pincode: shippingAddress.pincode,
-            country: 'IN'
-          }
+          customer_name: shippingAddress.name
         };
 
-        console.log('🔄 Creating Stripe payment intent for order:', order.orderId);
+        console.log('🔄 Creating Stripe checkout session for order:', order.orderId);
 
-        const stripeResponse = await stripe.createPaymentIntent(stripeOrderData);
+        const stripeResponse = await stripe.createCheckoutSession(stripeOrderData);
         
-        console.log('✅ Stripe payment intent created successfully');
+        console.log('✅ Stripe checkout session created successfully');
 
         // Update order with Stripe details
-        order.stripePaymentIntentId = stripeResponse.payment_intent_id;
+        order.stripeSessionId = stripeResponse.session_id;
         order.paymentStatus = 'processing';
         await order.save();
 
         res.json({
           orderId: order.orderId,
-          clientSecret: stripeResponse.client_secret,
-          paymentIntentId: stripeResponse.payment_intent_id,
-          publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+          sessionId: stripeResponse.session_id,
+          checkoutUrl: stripeResponse.url,
           orderAmount: finalAmount,
           currency: stripeResponse.currency
         });
@@ -225,6 +217,59 @@ router.post('/create', protectCustomer, async (req, res) => {
   }
 });
 
+// Verify Payment After Stripe Redirect
+router.get('/verify-payment/:sessionId', protectCustomer, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { order_id } = req.query;
+
+    console.log('🔍 Verifying payment for session:', sessionId);
+
+    const session = await stripe.retrieveSession(sessionId);
+    const order = await Order.findOne({ orderId: order_id, user: req.user._id });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (session.payment_status === 'paid') {
+      order.paymentStatus = 'success';
+      order.orderStatus = 'confirmed';
+      order.stripePaymentStatus = 'paid';
+      order.stripePaymentIntentId = session.payment_intent;
+      await order.save();
+
+      // Clear user's cart
+      await Cart.findOneAndUpdate(
+        { user: req.user._id },
+        { items: [], totalQuantity: 0, totalAmount: 0 }
+      );
+
+      console.log('✅ Payment verified successfully');
+
+      res.json({
+        success: true,
+        orderId: order.orderId,
+        paymentStatus: 'success',
+        amount: order.finalAmount
+      });
+    } else {
+      order.paymentStatus = 'failed';
+      order.orderStatus = 'cancelled';
+      await order.save();
+
+      res.json({
+        success: false,
+        orderId: order.orderId,
+        paymentStatus: 'failed'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Verify payment error:', error);
+    res.status(500).json({ message: 'Failed to verify payment', error: error.message });
+  }
+});
+
 // Stripe Webhook Handler
 router.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
   let event;
@@ -241,16 +286,12 @@ router.post('/webhook', express.raw({type: 'application/json'}), async (req, res
     console.log('📨 Stripe Webhook Event Received:', event.type);
 
     switch (event.type) {
-      case 'payment_intent.succeeded':
-        await handlePaymentSuccess(event.data.object);
+      case 'checkout.session.completed':
+        await handleCheckoutSuccess(event.data.object);
         break;
       
-      case 'payment_intent.payment_failed':
-        await handlePaymentFailure(event.data.object);
-        break;
-      
-      case 'payment_intent.canceled':
-        await handlePaymentCanceled(event.data.object);
+      case 'checkout.session.expired':
+        await handleCheckoutExpired(event.data.object);
         break;
       
       default:
@@ -265,10 +306,10 @@ router.post('/webhook', express.raw({type: 'application/json'}), async (req, res
 });
 
 // Webhook Handlers
-async function handlePaymentSuccess(paymentIntent) {
-  const { order_id } = paymentIntent.metadata;
+async function handleCheckoutSuccess(session) {
+  const { order_id } = session.metadata;
   
-  console.log('✅ Payment successful for order:', order_id);
+  console.log('✅ Checkout completed for order:', order_id);
 
   const order = await Order.findOne({ orderId: order_id });
   if (!order) {
@@ -278,8 +319,9 @@ async function handlePaymentSuccess(paymentIntent) {
 
   order.paymentStatus = 'success';
   order.orderStatus = 'confirmed';
-  order.stripePaymentStatus = 'succeeded';
-  order.stripePaymentIntentId = paymentIntent.id;
+  order.stripePaymentStatus = 'paid';
+  order.stripePaymentIntentId = session.payment_intent;
+  order.stripeSessionId = session.id;
   
   // Clear user's cart
   await Cart.findOneAndUpdate(
@@ -291,44 +333,23 @@ async function handlePaymentSuccess(paymentIntent) {
   console.log('✅ Order updated for successful payment:', order_id);
 }
 
-async function handlePaymentFailure(paymentIntent) {
-  const { order_id } = paymentIntent.metadata;
+async function handleCheckoutExpired(session) {
+  const { order_id } = session.metadata;
   
-  console.log('❌ Payment failed for order:', order_id);
+  console.log('⚠️ Checkout expired for order:', order_id);
 
   const order = await Order.findOne({ orderId: order_id });
   if (!order) {
-    console.error('❌ Order not found for failed payment:', order_id);
+    console.error('❌ Order not found for expired checkout:', order_id);
     return;
   }
 
   order.paymentStatus = 'failed';
   order.orderStatus = 'cancelled';
-  order.stripePaymentStatus = 'failed';
-  order.stripePaymentIntentId = paymentIntent.id;
+  order.stripePaymentStatus = 'expired';
 
   await order.save();
-  console.log('✅ Order updated for failed payment:', order_id);
-}
-
-async function handlePaymentCanceled(paymentIntent) {
-  const { order_id } = paymentIntent.metadata;
-  
-  console.log('⚠️ Payment canceled for order:', order_id);
-
-  const order = await Order.findOne({ orderId: order_id });
-  if (!order) {
-    console.error('❌ Order not found for canceled payment:', order_id);
-    return;
-  }
-
-  order.paymentStatus = 'cancelled';
-  order.orderStatus = 'cancelled';
-  order.stripePaymentStatus = 'canceled';
-  order.stripePaymentIntentId = paymentIntent.id;
-
-  await order.save();
-  console.log('✅ Order updated for canceled payment:', order_id);
+  console.log('✅ Order updated for expired checkout:', order_id);
 }
 
 // Check Payment Status
@@ -346,19 +367,15 @@ router.get('/payment-status/:orderId', protectCustomer, async (req, res) => {
     }
 
     // If it's a Stripe payment, get latest status from Stripe
-    if (order.stripePaymentIntentId) {
+    if (order.stripeSessionId) {
       try {
-        const paymentIntent = await stripe.retrievePaymentIntent(order.stripePaymentIntentId);
-        order.stripePaymentStatus = paymentIntent.status;
+        const session = await stripe.retrieveSession(order.stripeSessionId);
+        order.stripePaymentStatus = session.payment_status;
         
         // Sync with our database
-        if (paymentIntent.status === 'succeeded' && order.paymentStatus !== 'success') {
+        if (session.payment_status === 'paid' && order.paymentStatus !== 'success') {
           order.paymentStatus = 'success';
           order.orderStatus = 'confirmed';
-          await order.save();
-        } else if (paymentIntent.status === 'canceled' && order.paymentStatus !== 'cancelled') {
-          order.paymentStatus = 'cancelled';
-          order.orderStatus = 'cancelled';
           await order.save();
         }
       } catch (stripeError) {
@@ -391,7 +408,7 @@ router.get('/my-orders', protectCustomer, async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('-stripePaymentIntentId')
+      .select('-stripePaymentIntentId -stripeSessionId')
       .populate('items.productId', 'name');
 
     const totalOrders = await Order.countDocuments({ user: userId });
@@ -451,16 +468,6 @@ router.put('/cancel/:orderId', protectCustomer, async (req, res) => {
 
     if (order.orderStatus === 'cancelled') {
       return res.status(400).json({ message: 'Order is already cancelled' });
-    }
-
-    // If it's a Stripe payment, cancel the payment intent
-    if (order.stripePaymentIntentId && order.paymentStatus === 'processing') {
-      try {
-        await stripe.stripe.paymentIntents.cancel(order.stripePaymentIntentId);
-        console.log('✅ Stripe payment intent cancelled:', order.stripePaymentIntentId);
-      } catch (stripeError) {
-        console.error('Error cancelling Stripe payment:', stripeError);
-      }
     }
 
     order.orderStatus = 'cancelled';
