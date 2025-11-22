@@ -216,7 +216,7 @@ const OrderSuccess = () => {
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row gap-4 justify-center mb-8">
           <Link
-            to="/orders"
+            to="/order-tracking"
             className="bg-blue-600 text-white px-10 py-3 rounded-sm font-medium hover:bg-blue-700 transition-all text-center shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
           >
             Track Your Order

@@ -23,6 +23,7 @@ import OrderStatus from './pages/OrderStatus';
 import MyOrders from './pages/MyOrders';
 import AdminOrders from './pages/AdminOrders';
 import 'bootstrap/dist/js/bootstrap.bundle.min.js';
+import OrderTracking from './pages/OrderTracking'
 
 function App() {
   return (
@@ -38,7 +39,8 @@ function App() {
         <Route path="/login-customer" element={<LoginCustomer />} />
         <Route path="/register-customer" element={<RegisterCustomer />} />
         <Route path="/forgot-password-customer" element={<ForgotPasswordCustomer />} />
-        
+        <Route path="/order-tracking/:orderId" element={<OrderTracking />} />
+
         {/* Customer Protected Routes */}
         <Route path="/cart" element={<CartCustomer />} />
         <Route path="/checkout-customer" element={<CheckoutCustomer />} />
