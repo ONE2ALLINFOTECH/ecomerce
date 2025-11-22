@@ -49,21 +49,36 @@ router.post('/create', protectCustomer, async (req, res) => {
       });
     }
 
-    // Check Ekart serviceability before creating order
+    // Check Ekart serviceability before creating order - PROPERLY FIXED
+    let isServiceable = true;
+    let serviceabilityMessage = '';
+
     try {
       console.log('📍 Checking Ekart serviceability for pincode:', shippingAddress.pincode);
       const serviceability = await EkartService.checkServiceability(shippingAddress.pincode);
       
-      if (!serviceability.forward_drop) {
-        return res.status(400).json({
-          message: 'Sorry, we do not deliver to this pincode. Please check your shipping address.'
-        });
-      }
-      console.log('✅ Pincode is serviceable');
+      // FIX: Properly check serviceability
+      isServiceable = serviceability.isServiceable === true;
+      serviceabilityMessage = serviceability.remark || 'Serviceability check completed';
+      
+      console.log('📍 Serviceability result:', {
+        isServiceable,
+        message: serviceabilityMessage,
+        data: serviceability
+      });
+
     } catch (serviceabilityError) {
-      console.error('❌ Serviceability check failed:', serviceabilityError.message);
+      console.error('❌ Serviceability check failed, but continuing:', serviceabilityError.message);
+      // Continue with order even if serviceability check fails
+      isServiceable = true;
+      serviceabilityMessage = 'Serviceability check failed, but order will proceed';
+    }
+
+    // FIX: Only block if explicitly not serviceable
+    if (isServiceable === false) {
       return res.status(400).json({
-        message: 'Service not available for this pincode. Please try a different address.'
+        message: 'Sorry, we do not deliver to this pincode. Please check your shipping address.',
+        pincode: shippingAddress.pincode
       });
     }
 
@@ -143,7 +158,7 @@ router.post('/create', protectCustomer, async (req, res) => {
       shippingCharge,
       finalAmount,
       paymentMethod,
-      expectedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) // 3 days from now
+      expectedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
     };
 
     // Create order in database
@@ -451,7 +466,7 @@ router.put('/cancel/:orderId', protectCustomer, async (req, res) => {
   }
 });
 
-// Check serviceability for pincode
+// Check serviceability for pincode - COMPLETELY FIXED VERSION
 router.get('/serviceability/:pincode', async (req, res) => {
   try {
     const { pincode } = req.params;
@@ -462,19 +477,33 @@ router.get('/serviceability/:pincode', async (req, res) => {
       });
     }
 
+    console.log('📍 Checking serviceability for pincode:', pincode);
+
     const serviceability = await EkartService.checkServiceability(pincode);
+
+    console.log('📍 Serviceability result:', serviceability);
+
+    // FIX: Proper serviceability check
+    const isServiceable = serviceability.isServiceable === true;
 
     res.json({
       pincode,
-      serviceable: serviceability.forward_drop,
-      details: serviceability
+      serviceable: isServiceable,
+      details: serviceability,
+      message: isServiceable ? 
+        'Delivery available to this pincode' : 
+        'Delivery not available to this pincode'
     });
 
   } catch (error) {
     console.error('❌ Serviceability check error:', error);
-    res.status(500).json({ 
-      message: 'Failed to check serviceability', 
-      error: error.message 
+    
+    // Even if serviceability check fails, allow the order to proceed
+    res.json({
+      pincode: req.params.pincode,
+      serviceable: true,
+      warning: 'Serviceability check temporarily unavailable. Your order will proceed.',
+      error: error.message
     });
   }
 });
@@ -508,7 +537,7 @@ router.post('/shipping-rates', protectCustomer, async (req, res) => {
   }
 });
 
-// Get All User Orders (updated to include Ekart tracking)
+// Get All User Orders
 router.get('/my-orders', protectCustomer, async (req, res) => {
   try {
     const userId = req.user._id;
@@ -540,7 +569,7 @@ router.get('/my-orders', protectCustomer, async (req, res) => {
   }
 });
 
-// Get Single Order Details (updated to include Ekart info)
+// Get Single Order Details
 router.get('/:orderId', protectCustomer, async (req, res) => {
   try {
     const { orderId } = req.params;

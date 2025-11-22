@@ -40,9 +40,9 @@ const CheckoutCustomer = () => {
           const { data } = await API.get(`/orders/serviceability/${address.pincode}`);
           console.log('📍 Serviceability response:', data);
           
-          // Always set to true to bypass serviceability check
-          setPincodeServiceable(true);
-          setServiceabilityMessage(data.message || 'Delivery available to this pincode');
+          // FIX: Properly set serviceability based on API response
+          setPincodeServiceable(data.serviceable);
+          setServiceabilityMessage(data.message || 'Checking serviceability...');
           
         } catch (error) {
           console.error('Serviceability check failed:', error);
@@ -115,6 +115,11 @@ const CheckoutCustomer = () => {
 
     if (!/^\d{6}$/.test(address.pincode)) {
       alert('Please enter a valid 6-digit pincode');
+      return;
+    }
+
+    if (!pincodeServiceable) {
+      alert('Sorry, we do not deliver to this pincode. Please check your shipping address.');
       return;
     }
 
@@ -271,7 +276,9 @@ const CheckoutCustomer = () => {
                       maxLength={6}
                       className={`w-full px-4 py-3 border rounded text-sm focus:outline-none focus:border-blue-500 ${
                         address.pincode.length === 6
-                          ? 'border-green-500 bg-green-50'
+                          ? pincodeServiceable
+                            ? 'border-green-500 bg-green-50'
+                            : 'border-red-500 bg-red-50'
                           : 'border-gray-300'
                       }`}
                     />
@@ -282,9 +289,15 @@ const CheckoutCustomer = () => {
                     )}
                     {address.pincode.length === 6 && !checkingServiceability && (
                       <div className="absolute right-3 top-3">
-                        <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                        </svg>
+                        {pincodeServiceable ? (
+                          <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4 text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                          </svg>
+                        )}
                       </div>
                     )}
                   </div>
@@ -301,8 +314,12 @@ const CheckoutCustomer = () => {
                   </div>
                   {address.pincode.length === 6 && !checkingServiceability && serviceabilityMessage && (
                     <div className="col-span-2">
-                      <div className="text-green-600 text-sm bg-green-50 p-2 rounded">
-                        ✅ {serviceabilityMessage}
+                      <div className={`text-sm p-2 rounded ${
+                        pincodeServiceable 
+                          ? 'text-green-600 bg-green-50' 
+                          : 'text-red-600 bg-red-50'
+                      }`}>
+                        {pincodeServiceable ? '✅' : '❌'} {serviceabilityMessage}
                       </div>
                     </div>
                   )}
@@ -481,15 +498,21 @@ const CheckoutCustomer = () => {
               <div className="px-6 pb-6">
                 <button
                   onClick={handlePlaceOrder}
-                  disabled={loading || (!availablePaymentMethods.online && !availablePaymentMethods.cod)}
+                  disabled={loading || (!availablePaymentMethods.online && !availablePaymentMethods.cod) || !pincodeServiceable}
                   className={`w-full py-3 rounded font-semibold text-sm transition-colors shadow-md ${
-                    loading || (!availablePaymentMethods.online && !availablePaymentMethods.cod)
+                    loading || (!availablePaymentMethods.online && !availablePaymentMethods.cod) || !pincodeServiceable
                       ? 'bg-gray-400 text-gray-200 cursor-not-allowed'
                       : 'bg-orange-500 text-white hover:bg-orange-600'
                   }`}
                 >
                   {loading ? 'PROCESSING...' : 'CONTINUE'}
                 </button>
+                
+                {!pincodeServiceable && (
+                  <p className="text-red-600 text-xs mt-2 text-center">
+                    Delivery not available to this pincode
+                  </p>
+                )}
                 
                 {(!availablePaymentMethods.online && !availablePaymentMethods.cod) && (
                   <p className="text-red-600 text-xs mt-2 text-center">
