@@ -38,11 +38,11 @@ const CheckoutCustomer = () => {
         setCheckingServiceability(true);
         try {
           const { data } = await API.get(`/orders/serviceability/${address.pincode}`);
-          console.log('📍 Serviceability response:', data);
+          console.log('📍 Serviceability API response:', data);
           
-          // FIX: Properly set serviceability based on API response
+          // Set serviceability based on API response
           setPincodeServiceable(data.serviceable);
-          setServiceabilityMessage(data.message || 'Checking serviceability...');
+          setServiceabilityMessage(data.message || (data.serviceable ? 'Delivery available to this pincode' : 'Delivery not available to this pincode'));
           
         } catch (error) {
           console.error('Serviceability check failed:', error);

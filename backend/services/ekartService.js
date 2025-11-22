@@ -89,7 +89,7 @@ class EkartService {
         invoice_date: new Date().toISOString().split('T')[0],
         document_number: orderData.orderId,
         document_date: new Date().toISOString().split('T')[0],
-        products_desc: items.map(item => item.name).join(', ').substring(0, 100),
+        products_desc: items.map(item => item.name).join(', ').substring(0, 100), // Limit length
         payment_mode: orderData.paymentMethod === 'cod' ? 'COD' : 'Prepaid',
         category_of_goods: 'GENERAL',
         hsn_code: '',
@@ -243,11 +243,12 @@ class EkartService {
     }
   }
 
-  // Check serviceability - COMPLETELY FIXED VERSION
+  // Check serviceability - FIXED VERSION
   async checkServiceability(pincode) {
     try {
       console.log('📍 Checking serviceability for pincode:', pincode);
 
+      // First get authentication token
       const headers = await this.createHeaders();
 
       console.log('🔑 Headers for serviceability:', headers);
@@ -262,13 +263,7 @@ class EkartService {
 
       console.log('📍 Serviceability response:', response.data);
 
-      // FIX: Check both status and forward_drop fields
-      const isServiceable = response.data.status === true && response.data.forward_drop === true;
-      
-      return {
-        ...response.data,
-        isServiceable: isServiceable
-      };
+      return response.data;
 
     } catch (error) {
       console.error('❌ Serviceability check failed:', {
@@ -281,20 +276,15 @@ class EkartService {
         }
       });
 
-      // Return serviceable for testing if API fails
+      // If serviceability fails, return a default response for testing
+      console.log('🔄 Returning default serviceability response for testing');
       return {
-        status: true,
-        isServiceable: true,
-        pincode: pincode,
-        remark: 'Serviceability check bypassed for testing',
-        details: {
-          cod: true,
-          max_cod_amount: 50000,
-          forward_pickup: true,
-          forward_drop: true,
-          reverse_pickup: true,
-          reverse_drop: true
-        }
+        status: "success",
+        max_cod_amount: 50000,
+        forward_pickup: true,
+        forward_drop: true,
+        reverse_pickup: true,
+        reverse_drop: true
       };
     }
   }
@@ -302,7 +292,7 @@ class EkartService {
   // Helper method to calculate total weight
   calculateTotalWeight(items) {
     const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
-    return Math.max(totalItems * 500, 1000);
+    return Math.max(totalItems * 500, 1000); // Minimum 1kg
   }
 }
 
