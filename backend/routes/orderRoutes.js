@@ -6,10 +6,10 @@ const Cart = require('../models/Cart');
 const stripe = require('../config/stripe');
 const EkartService = require('../services/ekartService');
 
-// ✅ Create Order Route - FULLY FIXED
+// Create Order and Get Stripe Checkout URL
 router.post('/create', protectCustomer, async (req, res) => {
   try {
-    // Validate Stripe configuration
+    // Validate environment variables
     if (!process.env.STRIPE_PUBLISHABLE_KEY || !process.env.STRIPE_SECRET_KEY) {
       console.error('❌ Missing Stripe environment variables');
       return res.status(500).json({ 
@@ -23,7 +23,7 @@ router.post('/create', protectCustomer, async (req, res) => {
     console.log('📦 Creating order for user:', userId);
     console.log('💳 Payment method:', paymentMethod);
 
-    // ✅ Validate shipping address
+    // Validate shipping address
     if (!shippingAddress || 
         !shippingAddress.name || 
         !shippingAddress.mobile || 
@@ -37,21 +37,19 @@ router.post('/create', protectCustomer, async (req, res) => {
       });
     }
 
-    // ✅ Validate mobile number
     if (!/^\d{10}$/.test(shippingAddress.mobile)) {
       return res.status(400).json({ 
         message: 'Please provide a valid 10-digit mobile number' 
       });
     }
 
-    // ✅ Validate payment method
     if (!paymentMethod || !['online', 'cod'].includes(paymentMethod)) {
       return res.status(400).json({ 
         message: 'Invalid payment method. Use "online" or "cod"' 
       });
     }
 
-    // ✅ Check Ekart serviceability - NON-BLOCKING
+    // Check Ekart serviceability - NON-BLOCKING
     let serviceabilityCheck = { serviceable: true, warning: null };
     
     try {
@@ -71,7 +69,7 @@ router.post('/create', protectCustomer, async (req, res) => {
       serviceabilityCheck.warning = 'Serviceability check unavailable, proceeding with order';
     }
 
-    // ✅ Get user's cart with product validation
+    // Get user's cart
     const cart = await Cart.findOne({ user: userId })
       .populate('items.productId', 'enableOnlinePayment enableCashOnDelivery name sellingPrice');
 
@@ -81,7 +79,7 @@ router.post('/create', protectCustomer, async (req, res) => {
 
     console.log('🛒 Cart items:', cart.items.length);
 
-    // ✅ Validate payment method against product settings
+    // Validate payment method against product settings
     if (paymentMethod === 'online') {
       const productsWithoutOnlinePayment = cart.items.filter(
         item => item.productId && !item.productId.enableOnlinePayment
@@ -104,7 +102,7 @@ router.post('/create', protectCustomer, async (req, res) => {
       }
     }
 
-    // ✅ Calculate amounts
+    // Calculate amounts
     const totalAmount = cart.totalAmount;
     const discount = Math.round(totalAmount * 0.3);
     const shippingCharge = 29;
@@ -117,7 +115,7 @@ router.post('/create', protectCustomer, async (req, res) => {
       finalAmount
     });
 
-    // ✅ Create order items
+    // Create order items
     const orderItems = cart.items.map(item => ({
       productId: item.productId._id || item.productId,
       name: item.name,
@@ -127,7 +125,7 @@ router.post('/create', protectCustomer, async (req, res) => {
       totalPrice: item.sellingPrice * item.quantity
     }));
 
-    // ✅ Create order object
+    // Create order object
     const orderData = {
       user: userId,
       items: orderItems,
@@ -147,16 +145,16 @@ router.post('/create', protectCustomer, async (req, res) => {
       shippingCharge,
       finalAmount,
       paymentMethod,
-      expectedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) // 3 days
+      expectedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) // 3 days from now
     };
 
-    // ✅ Create order in database
+    // Create order in database
     const order = new Order(orderData);
     await order.save();
 
     console.log('✅ Order created in database:', order.orderId);
 
-    // ✅ ONLINE PAYMENT FLOW
+    // If payment is online, create Stripe Checkout Session
     if (paymentMethod === 'online') {
       try {
         const stripeOrderData = {
@@ -180,7 +178,7 @@ router.post('/create', protectCustomer, async (req, res) => {
         order.paymentStatus = 'processing';
         await order.save();
 
-        return res.json({
+        res.json({
           orderId: order.orderId,
           sessionId: stripeResponse.session_id,
           checkoutUrl: stripeResponse.url,
@@ -190,7 +188,7 @@ router.post('/create', protectCustomer, async (req, res) => {
         });
 
       } catch (stripeError) {
-        // If Stripe fails, cancel order
+        // If Stripe fails, update order status
         order.paymentStatus = 'failed';
         order.orderStatus = 'cancelled';
         await order.save();
@@ -201,70 +199,67 @@ router.post('/create', protectCustomer, async (req, res) => {
           error: stripeError.message 
         });
       }
-    }
+    } else {
+      // COD order - Update order status immediately
+      order.paymentStatus = 'pending';
+      order.orderStatus = 'confirmed';
+      await order.save();
 
-    // ✅ COD PAYMENT FLOW - CRITICAL FIX
-    // Set order as confirmed BEFORE Ekart shipment creation
-    order.paymentStatus = 'pending';
-    order.orderStatus = 'confirmed';
-    await order.save();
+      // Automatically create Ekart shipment for COD orders - WITH IMPROVED ERROR HANDLING
+      try {
+        console.log('🚚 Creating Ekart shipment for COD order...');
+        const ekartResponse = await EkartService.createShipment(
+          order,
+          order.shippingAddress,
+          order.items
+        );
 
-    console.log('✅ COD order confirmed before shipment creation');
+        if (ekartResponse.success) {
+          order.ekartTrackingId = ekartResponse.tracking_id;
+          order.ekartShipmentData = ekartResponse.raw_response;
+          order.ekartAWB = ekartResponse.awb_number;
+          await order.save();
 
-    // ✅ Create Ekart shipment for COD - NON-BLOCKING
-    try {
-      console.log('🚚 Creating Ekart shipment for COD order...');
-      const ekartResponse = await EkartService.createShipment(
-        order,
-        order.shippingAddress,
-        order.items
-      );
+          console.log('✅ Ekart shipment created for COD order:', ekartResponse.tracking_id);
 
-      // ✅ CRITICAL FIX: Check for tracking_id instead of success flag
-      if (ekartResponse && ekartResponse.tracking_id) {
-        order.ekartTrackingId = ekartResponse.tracking_id;
-        order.ekartShipmentData = ekartResponse.raw_response;
-        order.ekartAWB = ekartResponse.awb_number;
-        await order.save();
-
-        console.log('✅ Ekart shipment created:', ekartResponse.tracking_id);
-
-        // Optional: Verify shipment in dashboard
-        try {
-          const dashboardCheck = await EkartService.checkShipmentInDashboard(ekartResponse.tracking_id);
-          if (dashboardCheck.exists) {
-            console.log('✅ Shipment verified in Ekart dashboard');
-          } else {
-            console.log('⚠️ Shipment created but not yet visible in dashboard');
+          // Verify shipment exists in Ekart dashboard
+          try {
+            const dashboardCheck = await EkartService.checkShipmentInDashboard(ekartResponse.tracking_id);
+            if (dashboardCheck.exists) {
+              console.log('✅ Shipment verified in Ekart dashboard');
+            } else {
+              console.log('⚠️ Shipment created but not yet visible in dashboard');
+            }
+          } catch (dashboardError) {
+            console.log('⚠️ Could not verify shipment in dashboard:', dashboardError.message);
           }
-        } catch (dashboardError) {
-          console.log('⚠️ Could not verify shipment in dashboard:', dashboardError.message);
+        } else {
+          console.error('❌ Ekart shipment creation returned unsuccessful');
         }
-      } else {
-        console.error('❌ No tracking ID received from Ekart');
+
+      } catch (ekartError) {
+        console.error('❌ Ekart shipment creation failed for COD:', ekartError.message);
+        // Don't fail the order if shipment creation fails
+        // Just log the error and continue
       }
 
-    } catch (ekartError) {
-      console.error('❌ Ekart shipment creation failed for COD:', ekartError.message);
-      // Don't fail the order - shipment can be created manually later
+      // Clear cart for COD orders
+      await Cart.findOneAndUpdate(
+        { user: userId },
+        { items: [], totalQuantity: 0, totalAmount: 0 }
+      );
+
+      console.log('✅ COD order placed successfully');
+
+      res.json({
+        orderId: order.orderId,
+        message: 'Order placed successfully with Cash on Delivery',
+        orderAmount: finalAmount,
+        paymentMethod: 'cod',
+        trackingId: order.ekartTrackingId,
+        serviceabilityWarning: serviceabilityCheck.warning
+      });
     }
-
-    // ✅ Clear cart for COD orders
-    await Cart.findOneAndUpdate(
-      { user: userId },
-      { items: [], totalQuantity: 0, totalAmount: 0 }
-    );
-
-    console.log('✅ COD order placed successfully');
-
-    return res.json({
-      orderId: order.orderId,
-      message: 'Order placed successfully with Cash on Delivery',
-      orderAmount: finalAmount,
-      paymentMethod: 'cod',
-      trackingId: order.ekartTrackingId || null,
-      serviceabilityWarning: serviceabilityCheck.warning
-    });
 
   } catch (error) {
     console.error('❌ Create order error:', error);
@@ -277,117 +272,14 @@ router.post('/create', protectCustomer, async (req, res) => {
       });
     }
     
-    return res.status(500).json({ 
+    res.status(500).json({ 
       message: 'Failed to create order', 
       error: error.message 
     });
   }
 });
 
-// ✅ Verify Payment After Stripe Redirect - FIXED
-router.get('/verify-payment/:sessionId', protectCustomer, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const { order_id } = req.query;
-
-    console.log('🔍 Verifying payment for session:', sessionId);
-
-    const session = await stripe.retrieveSession(sessionId);
-    const order = await Order.findOne({ orderId: order_id, user: req.user._id });
-
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    if (session.payment_status === 'paid') {
-      // ✅ Update order status
-      order.paymentStatus = 'success';
-      order.orderStatus = 'confirmed';
-      order.stripePaymentStatus = 'paid';
-      order.stripePaymentIntentId = session.payment_intent;
-      await order.save();
-
-      console.log('✅ Payment verified successfully for order:', order.orderId);
-
-      // ✅ Clear user's cart
-      await Cart.findOneAndUpdate(
-        { user: req.user._id },
-        { items: [], totalQuantity: 0, totalAmount: 0 }
-      );
-
-      // ✅ Create Ekart shipment for successful online payment
-      let shipmentCreated = false;
-      let trackingId = null;
-
-      if (!order.ekartTrackingId) {
-        try {
-          console.log('🚚 Creating Ekart shipment for online order...');
-          const ekartResponse = await EkartService.createShipment(
-            order,
-            order.shippingAddress,
-            order.items
-          );
-
-          // ✅ Check for tracking_id
-          if (ekartResponse && ekartResponse.tracking_id) {
-            order.ekartTrackingId = ekartResponse.tracking_id;
-            order.ekartShipmentData = ekartResponse.raw_response;
-            order.ekartAWB = ekartResponse.awb_number;
-            await order.save();
-
-            shipmentCreated = true;
-            trackingId = ekartResponse.tracking_id;
-            console.log('✅ Ekart shipment created automatically');
-
-            // Verify in dashboard
-            try {
-              await EkartService.checkShipmentInDashboard(ekartResponse.tracking_id);
-              console.log('✅ Shipment verified in dashboard');
-            } catch (dashboardError) {
-              console.log('⚠️ Could not verify shipment in dashboard');
-            }
-          }
-        } catch (ekartError) {
-          console.error('❌ Automatic Ekart shipment creation failed:', ekartError.message);
-          // Don't fail payment verification if shipment creation fails
-        }
-      } else {
-        shipmentCreated = true;
-        trackingId = order.ekartTrackingId;
-      }
-
-      return res.json({
-        success: true,
-        orderId: order.orderId,
-        paymentStatus: 'success',
-        amount: order.finalAmount,
-        trackingId: trackingId,
-        shipmentCreated: shipmentCreated
-      });
-    } else {
-      // Payment failed
-      order.paymentStatus = 'failed';
-      order.orderStatus = 'cancelled';
-      await order.save();
-
-      console.log('❌ Payment failed for order:', order.orderId);
-
-      return res.json({
-        success: false,
-        orderId: order.orderId,
-        paymentStatus: 'failed'
-      });
-    }
-  } catch (error) {
-    console.error('❌ Verify payment error:', error);
-    return res.status(500).json({ 
-      message: 'Failed to verify payment', 
-      error: error.message 
-    });
-  }
-});
-
-// ✅ Create/Retry Ekart Shipment Manually - FIXED
+// Create Ekart Shipment after successful payment - IMPROVED
 router.post('/create-shipment/:orderId', protectCustomer, async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -413,28 +305,28 @@ router.post('/create-shipment/:orderId', protectCustomer, async (req, res) => {
           });
         } else {
           console.log('🔄 Shipment tracking ID exists but not in dashboard, recreating...');
+          // If tracking ID exists but not in dashboard, recreate shipment
         }
       } catch (error) {
         console.log('🔄 Unable to verify existing shipment, recreating...');
       }
     }
 
-    // ✅ Create shipment with Ekart
+    // Create shipment with Ekart
     const ekartResponse = await EkartService.createShipment(
       order,
       order.shippingAddress,
       order.items
     );
 
-    // ✅ Check for tracking_id instead of success flag
-    if (!ekartResponse || !ekartResponse.tracking_id) {
+    if (!ekartResponse.success) {
       return res.status(500).json({
         message: 'Failed to create shipment in Ekart',
-        error: ekartResponse?.message || 'No tracking ID received'
+        error: ekartResponse.message
       });
     }
 
-    // ✅ Update order with Ekart tracking details
+    // Update order with Ekart tracking details
     order.ekartTrackingId = ekartResponse.tracking_id;
     order.ekartShipmentData = ekartResponse.raw_response;
     order.ekartAWB = ekartResponse.awb_number;
@@ -452,7 +344,7 @@ router.post('/create-shipment/:orderId', protectCustomer, async (req, res) => {
       dashboardStatus = 'check_failed';
     }
 
-    return res.json({
+    res.json({
       success: true,
       message: 'Shipment created successfully',
       trackingId: order.ekartTrackingId,
@@ -463,14 +355,108 @@ router.post('/create-shipment/:orderId', protectCustomer, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Create shipment error:', error);
-    return res.status(500).json({ 
+    res.status(500).json({ 
       message: 'Failed to create shipment', 
       error: error.message 
     });
   }
 });
 
-// ✅ Track Shipment - FIXED
+// Verify Payment After Stripe Redirect - IMPROVED
+router.get('/verify-payment/:sessionId', protectCustomer, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { order_id } = req.query;
+
+    console.log('🔍 Verifying payment for session:', sessionId);
+
+    const session = await stripe.retrieveSession(sessionId);
+    const order = await Order.findOne({ orderId: order_id, user: req.user._id });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (session.payment_status === 'paid') {
+      order.paymentStatus = 'success';
+      order.orderStatus = 'confirmed';
+      order.stripePaymentStatus = 'paid';
+      order.stripePaymentIntentId = session.payment_intent;
+      await order.save();
+
+      // Clear user's cart
+      await Cart.findOneAndUpdate(
+        { user: req.user._id },
+        { items: [], totalQuantity: 0, totalAmount: 0 }
+      );
+
+      console.log('✅ Payment verified successfully');
+
+      // Automatically create Ekart shipment for successful online payments - WITH RETRY LOGIC
+      let shipmentCreated = false;
+      let trackingId = null;
+
+      if (!order.ekartTrackingId) {
+        try {
+          console.log('🚚 Creating Ekart shipment for online order...');
+          const ekartResponse = await EkartService.createShipment(
+            order,
+            order.shippingAddress,
+            order.items
+          );
+
+          if (ekartResponse.success) {
+            order.ekartTrackingId = ekartResponse.tracking_id;
+            order.ekartShipmentData = ekartResponse.raw_response;
+            order.ekartAWB = ekartResponse.awb_number;
+            await order.save();
+
+            shipmentCreated = true;
+            trackingId = ekartResponse.tracking_id;
+            console.log('✅ Ekart shipment created automatically');
+
+            // Verify in dashboard
+            try {
+              await EkartService.checkShipmentInDashboard(ekartResponse.tracking_id);
+            } catch (dashboardError) {
+              console.log('⚠️ Could not verify shipment in dashboard');
+            }
+          }
+        } catch (ekartError) {
+          console.error('❌ Automatic Ekart shipment creation failed:', ekartError.message);
+          // Don't fail the payment verification if shipment creation fails
+        }
+      } else {
+        shipmentCreated = true;
+        trackingId = order.ekartTrackingId;
+      }
+
+      res.json({
+        success: true,
+        orderId: order.orderId,
+        paymentStatus: 'success',
+        amount: order.finalAmount,
+        trackingId: trackingId,
+        shipmentCreated: shipmentCreated
+      });
+    } else {
+      order.paymentStatus = 'failed';
+      order.orderStatus = 'cancelled';
+      await order.save();
+
+      res.json({
+        success: false,
+        orderId: order.orderId,
+        paymentStatus: 'failed'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Verify payment error:', error);
+    res.status(500).json({ message: 'Failed to verify payment', error: error.message });
+  }
+});
+
+// Track shipment with Ekart - IMPROVED
 router.get('/track/:orderId', protectCustomer, async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -494,16 +480,7 @@ router.get('/track/:orderId', protectCustomer, async (req, res) => {
     }
 
     // Get tracking info from Ekart
-    let trackingInfo = null;
-    try {
-      trackingInfo = await EkartService.trackShipment(order.ekartTrackingId);
-    } catch (trackError) {
-      trackingInfo = {
-        tracking_id: order.ekartTrackingId,
-        current_status: 'Tracking information unavailable',
-        error: trackError.message
-      };
-    }
+    const trackingInfo = await EkartService.trackShipment(order.ekartTrackingId);
 
     // Check if shipment exists in dashboard
     let dashboardStatus = 'unknown';
@@ -514,7 +491,7 @@ router.get('/track/:orderId', protectCustomer, async (req, res) => {
       dashboardStatus = 'check_failed';
     }
 
-    return res.json({
+    res.json({
       orderId: order.orderId,
       trackingId: order.ekartTrackingId,
       awb: order.ekartAWB,
@@ -527,14 +504,14 @@ router.get('/track/:orderId', protectCustomer, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Track shipment error:', error);
-    return res.status(500).json({ 
+    res.status(500).json({ 
       message: 'Failed to track shipment', 
       error: error.message 
     });
   }
 });
 
-// ✅ Cancel Order and Ekart Shipment - FIXED
+// Cancel order and Ekart shipment
 router.put('/cancel/:orderId', protectCustomer, async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -560,7 +537,7 @@ router.put('/cancel/:orderId', protectCustomer, async (req, res) => {
     if (order.ekartTrackingId) {
       try {
         const cancelResult = await EkartService.cancelShipment(order.ekartTrackingId);
-        console.log('✅ Ekart shipment cancelled:', cancelResult);
+        console.log('✅ Ekart shipment cancellation result:', cancelResult);
       } catch (cancelError) {
         console.error('❌ Ekart shipment cancellation failed:', cancelError.message);
         // Continue with order cancellation even if shipment cancellation fails
@@ -571,22 +548,19 @@ router.put('/cancel/:orderId', protectCustomer, async (req, res) => {
     order.paymentStatus = 'cancelled';
     await order.save();
 
-    console.log('✅ Order cancelled successfully:', orderId);
+    console.log('✅ Order cancelled successfully');
 
-    return res.json({ 
+    res.json({ 
       message: 'Order cancelled successfully',
       order 
     });
   } catch (error) {
     console.error('❌ Cancel order error:', error);
-    return res.status(500).json({ 
-      message: 'Failed to cancel order', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Failed to cancel order', error: error.message });
   }
 });
 
-// ✅ Check Serviceability for Pincode - FIXED
+// Check serviceability for pincode
 router.get('/serviceability/:pincode', async (req, res) => {
   try {
     const { pincode } = req.params;
@@ -603,23 +577,21 @@ router.get('/serviceability/:pincode', async (req, res) => {
 
     console.log('📍 Serviceability result:', serviceability);
 
-    return res.json({
+    res.json({
       pincode,
       serviceable: serviceability.serviceable,
       codAvailable: serviceability.cod_available,
       prepaidAvailable: serviceability.prepaid_available,
       maxCodAmount: serviceability.max_cod_amount,
       estimatedDeliveryDays: serviceability.estimated_delivery_days,
-      message: serviceability.serviceable 
-        ? 'Delivery available to this pincode' 
-        : 'Delivery not available to this pincode',
+      message: serviceability.serviceable ? 'Delivery available to this pincode' : 'Delivery not available to this pincode',
       warning: serviceability.warning
     });
   } catch (error) {
     console.error('❌ Serviceability check error:', error);
 
-    // Return serviceable even on error (non-blocking)
-    return res.json({
+    // Return serviceable even on error
+    res.json({
       pincode: req.params.pincode,
       serviceable: true,
       codAvailable: true,
@@ -632,7 +604,7 @@ router.get('/serviceability/:pincode', async (req, res) => {
   }
 });
 
-// ✅ Get Shipping Rates Estimate - FIXED
+// Get shipping rates estimate
 router.post('/shipping-rates', protectCustomer, async (req, res) => {
   try {
     const { pickupPincode, deliveryPincode, weight, codAmount } = req.body;
@@ -650,17 +622,14 @@ router.post('/shipping-rates', protectCustomer, async (req, res) => {
       codAmount || 0
     );
 
-    return res.json(rates);
+    res.json(rates);
   } catch (error) {
     console.error('❌ Shipping rates error:', error);
-    return res.status(500).json({ 
-      message: 'Failed to get shipping rates', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Failed to get shipping rates', error: error.message });
   }
 });
 
-// ✅ Get All User Orders - FIXED
+// Get All User Orders
 router.get('/my-orders', protectCustomer, async (req, res) => {
   try {
     const userId = req.user._id;
@@ -677,7 +646,7 @@ router.get('/my-orders', protectCustomer, async (req, res) => {
 
     const totalOrders = await Order.countDocuments({ user: userId });
 
-    return res.json({
+    res.json({
       orders,
       pagination: {
         currentPage: page,
@@ -688,14 +657,11 @@ router.get('/my-orders', protectCustomer, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Get user orders error:', error);
-    return res.status(500).json({ 
-      message: 'Failed to fetch orders', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Failed to fetch orders', error: error.message });
   }
 });
 
-// ✅ Get Single Order Details - FIXED
+// Get Single Order Details - IMPROVED
 router.get('/:orderId', protectCustomer, async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -730,7 +696,7 @@ router.get('/:orderId', protectCustomer, async (req, res) => {
       }
     }
 
-    return res.json({
+    res.json({
       ...order.toObject(),
       trackingInfo,
       dashboardStatus,
@@ -740,10 +706,7 @@ router.get('/:orderId', protectCustomer, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Get order details error:', error);
-    return res.status(500).json({ 
-      message: 'Failed to fetch order details', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Failed to fetch order details', error: error.message });
   }
 });
 
